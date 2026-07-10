@@ -19,6 +19,7 @@ cortex — run any change transactionally, verify it, undo it with proof.
 
 USAGE
   cortex try \"<what you want>\"     Plan it, run it in a sandbox, verify, commit
+                                    (the `try` is optional: cortex \"<what you want>\" works too)
   cortex status                     What is applied, what is undoable, what is blocked
   cortex undo [id]                  Reverse the last change (or one by id), with proof
   cortex receipt [id]               Signed summary of one transaction
@@ -147,7 +148,17 @@ fn run() -> Result<()> {
             println!("cortex {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        Some(other) => bail!("unknown command `{other}`\n\n{USAGE}"),
+        // A first argument that reads like a sentence — quoted English with
+        // spaces — is a task, not a subcommand. `cortex "run nginx on 8080"`
+        // does what the user obviously meant, so the `try` verb is optional
+        // for the common case. A bare unknown *word* stays an error, which
+        // catches subcommand typos (`cortex stauts`) instead of silently
+        // treating them as tasks.
+        Some(first) if first.contains(' ') => cmd_try(&rest, &g),
+        Some(other) => bail!(
+            "unknown command `{other}`. For a task, quote it:  \
+             cortex try \"<what you want>\"\n\n{USAGE}"
+        ),
     }
 }
 
