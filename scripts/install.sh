@@ -1,9 +1,7 @@
 #!/bin/sh
-# cortex installer — the CLI only.
+# cortex installer.
 #
-#   curl -sSL https://get.cortex.dev | sh
-#
-# (For the full Aix OS stack — brains, tunnel, server — use ./install.sh.)
+#   curl -sSL https://raw.githubusercontent.com/iPatan7/Aix-Cortex-v1/main/scripts/install.sh | sh
 #
 # Downloads a static binary, verifies its checksum, installs it, and then —
 # because this tool's entire claim is that undo works — points you at
@@ -12,7 +10,7 @@
 # POSIX sh, no bashisms: this runs on whatever is on the box.
 set -eu
 
-REPO="${CORTEX_REPO:-cortex-run/cortex}"
+REPO="${CORTEX_REPO:-iPatan7/Aix-Cortex-v1}"
 VERSION="${CORTEX_VERSION:-latest}"
 BIN_DIR="${CORTEX_BIN_DIR:-}"
 BIN_NAME="cortex"

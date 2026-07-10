@@ -13,7 +13,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
 license = "Apache-2.0"
-repository = "https://github.com/cortex-run/cortex"
+repository = "https://github.com/iPatan7/Aix-Cortex-v1"
 authors = ["Cortex contributors"]
 
 [workspace.dependencies]

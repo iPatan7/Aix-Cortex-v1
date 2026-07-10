@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <code>curl -sSL https://get.cortex.dev | sh</code>
+  <code>curl -sSL https://raw.githubusercontent.com/iPatan7/Aix-Cortex-v1/main/scripts/install.sh | sh</code>
 </p>
 
 ---
@@ -161,7 +161,7 @@ the host through a bind mount. On a kernel without Landlock the namespace
 isolation still holds and confinement is skipped rather than failing the run.
 
 Plugin, daemon, and eBPF are documented seams, wired when a user needs them
-(see [docs/roadmap.md]).
+(see [docs/roadmap.md](docs/roadmap.md)).
 
 ## Building
 
@@ -177,4 +177,4 @@ The static musl binary is 2.2 MB and depends on nothing.
 
 ## License
 
-Apache-2.0 (open core). See [docs/monetization.md] for the enterprise tier.
+Apache-2.0 (open core). See [docs/monetization.md](docs/monetization.md) for the enterprise tier.
