@@ -143,10 +143,40 @@ fn port_mapping(t: &str) -> Option<String> {
     None
 }
 
+/// True when the text names a network port: "port 8080", "on 8080", or a
+/// "host:container" mapping like "8080:80".
+fn mentions_a_port(t: &str, w: &[&str]) -> bool {
+    // Explicit "port N".
+    for (i, tok) in w.iter().enumerate() {
+        if *tok == "port" && w.get(i + 1).is_some_and(|n| is_port_number(n)) {
+            return true;
+        }
+    }
+    // A host:container mapping.
+    t.split_whitespace().any(|tok| {
+        tok.split_once(':')
+            .is_some_and(|(h, c)| is_port_number(h) && is_port_number(c))
+    })
+}
+
+fn is_port_number(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars().all(|c| c.is_ascii_digit())
+        && s.parse::<u32>().is_ok_and(|n| n <= 65535)
+}
+
 /// "run nginx server", "start nginx", "stop the postgres service"
 fn service(t: &str, w: &[&str]) -> Option<Offline> {
     // A docker phrasing already claimed this text.
     if t.contains("docker") || t.contains("container") {
+        return None;
+    }
+    // A named port means the user wants something *listening on that port*.
+    // `systemctl start` cannot deliver that — nginx starts on 80 regardless —
+    // so matching a service-start here would silently ignore the port and do
+    // the wrong thing. Defer to the model, which can choose a container or a
+    // config edit. This is the "run nginx on port 8080" case.
+    if mentions_a_port(t, w) {
         return None;
     }
     let op = if w.contains(&"restart") {
@@ -253,6 +283,38 @@ mod tests {
         assert!(plan("start the server").is_none());
         // Not an install verb we recognise.
         assert!(plan("reinstall the world").is_none());
+    }
+
+    /// The bug a real test run hit: "run nginx on port 8080" (no "docker")
+    /// was matched as `service start nginx`, silently dropping "port 8080" and
+    /// doing the wrong thing. A named port means the service matcher must NOT
+    /// claim it — a bare `systemctl start` cannot put nginx on 8080. It defers
+    /// so the model (or the operator) picks a container or a config edit.
+    #[test]
+    fn a_named_port_stops_the_service_matcher_guessing() {
+        assert!(
+            plan("run nginx on port 8080").is_none(),
+            "a service-start cannot honour a port; must defer, not guess"
+        );
+        assert!(plan("start postgres on port 5432").is_none());
+        // But a portless service request still matches, including "on boot".
+        assert_eq!(plan("run nginx server").unwrap()["op"], "start");
+        assert_eq!(plan("enable nginx on boot").unwrap()["op"], "enable");
+    }
+
+    #[test]
+    fn port_detection_is_precise() {
+        fn has_port(t: &str) -> bool {
+            let w: Vec<&str> = t.split_whitespace().collect();
+            mentions_a_port(t, &w)
+        }
+        assert!(has_port("run x on port 8080"));
+        assert!(has_port("map 8080:80"));
+        // "on boot" is not a port; "port" without a number is not a port.
+        assert!(!has_port("enable x on boot"));
+        assert!(!has_port("the port is open"));
+        // Out-of-range numbers are not ports.
+        assert!(!has_port("port 99999"));
     }
 
     /// Docker phrasing must not be stolen by the service matcher, which

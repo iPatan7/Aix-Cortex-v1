@@ -1461,16 +1461,41 @@ pub fn run_natural_language(
         );
         LlmClient::new(crate::llm::DEFAULT_ENDPOINT, "llama3")
     });
-    let plan = client.generate_plan(description).map_err(|e| {
-        e.context(
-            "could not turn that into a reversible workflow — run it explicitly, \
-             e.g. `cortex workflow safe-service --op start --service nginx` \
-             (set CORTEX_LLM_ENDPOINT to your cortex-server relay, \
-             http://127.0.0.1:36702/api/chat)",
-        )
-    })?;
+    let plan = client
+        .generate_plan(description)
+        .map_err(|e| e.context(offline_fallback_hint(description)))?;
     ui::info(&format!("plan: {plan}"));
     run_plan(&plan, journal_dir, lower, state_dir, authorize)
+}
+
+/// A concrete next step when the offline matcher missed and no LLM answered.
+/// Tailored to what the request looks like, so "run nginx on port 8080" gets
+/// the two commands that can actually deliver a service on a port, rather than
+/// a generic suggestion that ignores the port.
+fn offline_fallback_hint(description: &str) -> String {
+    let d = description.to_lowercase();
+    let has_port = d.contains("port")
+        || d.split_whitespace().any(|t| {
+            t.split_once(':').is_some_and(|(h, c)| {
+                !h.is_empty()
+                    && h.chars().all(|c| c.is_ascii_digit())
+                    && c.chars().all(|c| c.is_ascii_digit())
+            })
+        });
+    if has_port {
+        return "\
+could not do that without an LLM, and it names a port — which is ambiguous \
+offline (a container, or a config change?). Pick one explicitly:\n  \
+run a container on that port:   cortex do docker.run name=<n> image=<img> ports=<host>:<container>\n  \
+change a service's listen port: sudo cortex workflow safe-config --service <svc> --cmd \"<edit its config>\"\n\
+Or set CORTEX_LLM_ENDPOINT so `cortex try` can plan it for you."
+            .to_string();
+    }
+    "\
+could not turn that into a reversible workflow without an LLM. Run it \
+explicitly (see `cortex templates` and `cortex --help`), or set \
+CORTEX_LLM_ENDPOINT so `cortex try` can plan it."
+        .to_string()
 }
 
 /// The single point where a plan becomes a running operation. Both the
