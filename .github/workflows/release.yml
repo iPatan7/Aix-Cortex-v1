@@ -57,8 +57,14 @@ jobs:
         run: |
           B=target/${{ matrix.target }}/release/cortex
           file "$B" | tee t.txt
-          grep -Eq "static(-pie)? linked" t.txt || {
+          # `file` phrases this differently per arch: x86_64 says
+          # "static-pie linked", aarch64 says "statically linked". Accept any
+          # of static / statically / static-pie, and reject a dynamic loader.
+          grep -Eq "static(ally|-pie)? linked" t.txt || {
             echo "::error::binary is not static"; exit 1; }
+          if grep -q "interpreter" t.txt; then
+            echo "::error::binary names a dynamic interpreter"; exit 1
+          fi
           if command -v ldd >/dev/null 2>&1; then
             ! (ldd "$B" 2>&1 | grep -q "=>") || {
               echo "::error::binary has dynamic dependencies"; exit 1; }
