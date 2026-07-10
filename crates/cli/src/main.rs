@@ -36,7 +36,7 @@ FLAGS
 
   --journal-dir <d>  where undo records live   (default /var/lib/cortex/journal)
   --lower <d>        overlay base layer        (default /)
-  --state-dir <d>    overlay scratch           (default /run/cortex/transactions)
+  --state-dir <d>    overlay scratch           (default /var/lib/cortex/transactions)
 
 EXAMPLES
   cortex try \"run nginx on port 8080\"

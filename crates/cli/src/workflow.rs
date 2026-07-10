@@ -24,6 +24,11 @@ use cortex_policy::PolicyToken;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Where transaction scratch (upper/work/merged) lives by default. Disk-backed
+/// and persistent, so it satisfies the overlay's "different filesystem than
+/// lower" rule without landing on tmpfs (which the tmpfs guard would reject).
+pub const DEFAULT_STATE_DIR: &str = "/var/lib/cortex/transactions";
+
 /// Run a shell predicate; true when it exits 0. Used to prove that a command
 /// actually took effect, rather than merely exiting successfully.
 fn predicate_holds(cmd: &str) -> Result<bool> {
@@ -222,12 +227,14 @@ impl Workflow {
         Self {
             kind,
             lower: PathBuf::from("/"),
-            // Must live on a different filesystem than `lower`: the kernel
-            // rejects overlay mounts whose upper/work dirs sit inside a
-            // lower layer ("overlapping layers", EBUSY, kernel >= 5.2).
-            // /run is tmpfs on systemd hosts, so it is safe with lower=/;
-            // persistence comes from commit() merging into the lower layer.
-            state_dir: PathBuf::from("/run/cortex/transactions"),
+            // Disk-backed by default. It must be on a different filesystem
+            // than `lower` (the kernel rejects an overlay whose upper sits
+            // inside a lower layer), AND not on tmpfs (a large write would go
+            // to RAM and can OOM the host — see the tmpfs guard in
+            // Transaction::new). /var/lib/cortex is persistent disk on a
+            // normal host, satisfying both. The upper is discarded per
+            // transaction; only commit() merges into the lower layer.
+            state_dir: PathBuf::from(DEFAULT_STATE_DIR),
             journal_dir: PathBuf::from(DEFAULT_JOURNAL_DIR),
         }
     }

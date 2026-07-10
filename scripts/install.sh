@@ -70,6 +70,34 @@ preflight() {
         say "${DIM}docker not found — container templates will be skipped${RESET}"
 }
 
+# Build from a clone of the repo when there is no release binary to download.
+# Needs cargo; produces the same static musl binary a release would ship.
+install_from_source() {
+    bin_dir="$1"
+    command -v cargo >/dev/null 2>&1 || die "building from source needs Rust/cargo.
+    Install it from https://rustup.rs, then re-run this."
+
+    src=$(mktemp -d)
+    trap 'rm -rf "$src"' EXIT INT TERM
+
+    if command -v git >/dev/null 2>&1; then
+        say "cloning ${BOLD}$REPO${RESET}"
+        git clone --depth 1 "https://github.com/$REPO.git" "$src/repo" >/dev/null 2>&1 \
+            || die "git clone failed"
+    else
+        die "building from source needs git (or install a released binary)."
+    fi
+
+    say "building ${BOLD}cortex${RESET} (this takes a minute)"
+    ( cd "$src/repo" && cargo build --release -p cortex-cli >/dev/null 2>&1 ) \
+        || die "build failed — run 'cargo build --release -p cortex-cli' in the repo to see why"
+
+    built="$src/repo/target/release/$BIN_NAME"
+    [ -x "$built" ] || die "build succeeded but $BIN_NAME was not produced"
+    place_binary "$built" "$bin_dir"
+    finish "$bin_dir"
+}
+
 main() {
     need uname; need mktemp; need tar
     if command -v curl >/dev/null 2>&1; then
@@ -92,8 +120,13 @@ main() {
     if [ "$VERSION" = "latest" ]; then
         VERSION=$(fetch "https://api.github.com/repos/$REPO/releases/latest" \
             | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
-        [ -n "$VERSION" ] || die "could not determine the latest version.
-    Pin one explicitly:  CORTEX_VERSION=v0.1.0 sh"
+        # No published release yet: build from source instead of failing.
+        # This keeps `curl | sh` working from day one, before the first tag.
+        if [ -z "$VERSION" ]; then
+            warn "no published release yet — building from source"
+            install_from_source "$bin_dir"
+            return
+        fi
     fi
 
     asset="$BIN_NAME-$VERSION-$target.tar.gz"
@@ -123,12 +156,20 @@ main() {
     [ -f "$tmp/$BIN_NAME" ] || die "archive did not contain $BIN_NAME"
     chmod +x "$tmp/$BIN_NAME"
 
+    place_binary "$tmp/$BIN_NAME" "$bin_dir"
+    finish "$bin_dir"
+}
+
+# Move a built/downloaded binary into place, using sudo only if needed.
+place_binary() {
+    from="$1"; bin_dir="$2"
+    chmod +x "$from"
     mkdir -p "$bin_dir" 2>/dev/null || true
     if [ -w "$bin_dir" ]; then
-        mv "$tmp/$BIN_NAME" "$bin_dir/$BIN_NAME"
+        mv "$from" "$bin_dir/$BIN_NAME"
     elif command -v sudo >/dev/null 2>&1; then
         say "installing to $bin_dir (needs sudo)"
-        sudo mv "$tmp/$BIN_NAME" "$bin_dir/$BIN_NAME"
+        sudo mv "$from" "$bin_dir/$BIN_NAME"
     else
         die "cannot write to $bin_dir and sudo is unavailable.
     Retry with:  CORTEX_BIN_DIR=\$HOME/.local/bin sh"
@@ -140,21 +181,19 @@ main() {
         *) warn "$bin_dir is not on your PATH"
            say  "${DIM}add:  export PATH=\"$bin_dir:\$PATH\"${RESET}" ;;
     esac
+}
 
+# Seed policy and print the (short) next steps. Shared by both install paths.
+finish() {
+    bin_dir="$1"
     install_policy "$bin_dir"
 
-    # cortex mounts overlays and writes /var/lib/cortex; it needs root for
-    # real work. Say so now rather than at the first confusing failure.
-    printf '\n'
-    say "${BOLD}cortex needs root${RESET} to sandbox changes and record undo history."
-    say "${DIM}run it with sudo. cortex enforces its own deny-by-default policy${RESET}"
-    say "${DIM}in ${POLICY_FILE}, so root invocation is still constrained.${RESET}"
-
-    printf '\n%s▸%s %s\n' "$BOLD" "$RESET" "next"
-    say "${BOLD}cortex verify --self${RESET}   ${DIM}prove undo works, on this machine${RESET}"
-    say "${BOLD}cortex try \"run nginx on port 8080\"${RESET}"
-    say "${BOLD}cortex status${RESET}          ${DIM}what is applied, what is undoable${RESET}"
-    say "${BOLD}cortex undo${RESET}            ${DIM}reverse it, with proof${RESET}"
+    printf '\n%s✔%s %s\n' "$GREEN" "$RESET" "${BOLD}cortex is installed.${RESET} Run it with sudo; it enforces its own policy."
+    printf '\n%s▸%s %s\n' "$BOLD" "$RESET" "try it now"
+    say "${BOLD}cortex demo${RESET}                       ${DIM}see the guarantee in ~2s (no root)${RESET}"
+    say "${BOLD}sudo cortex try \"run nginx on port 8080\"${RESET}"
+    say "${BOLD}sudo cortex status${RESET}                ${DIM}what is applied${RESET}"
+    say "${BOLD}sudo cortex undo${RESET}                  ${DIM}reverse it, with proof${RESET}"
     printf '\n'
 }
 

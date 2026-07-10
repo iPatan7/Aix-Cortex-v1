@@ -9,6 +9,20 @@
   <code>curl -sSL https://raw.githubusercontent.com/iPatan7/Aix-Cortex-v1/main/scripts/install.sh | sh</code>
 </p>
 
+## Quickstart
+
+```sh
+curl -sSL https://raw.githubusercontent.com/iPatan7/Aix-Cortex-v1/main/scripts/install.sh | sh
+
+cortex demo                                # see the guarantee in ~2s (no root)
+sudo cortex try "run nginx on port 8080"   # plan → sandbox → verify → commit
+sudo cortex status                         # what's applied, what's undoable
+sudo cortex undo                           # reverse it, with proof
+```
+
+No flags, no setup, no scratch directories to create — cortex uses sensible
+defaults (`/var/lib/cortex`) and creates them on first run.
+
 ---
 
 Every tool will happily make a change. Almost none can take it back.
