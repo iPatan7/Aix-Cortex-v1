@@ -1,0 +1,173 @@
+# The guarantee is enforced here or it is not enforced at all.
+#
+# cortex promises a committed change can be undone, with proof. That promise
+# was false twice in ways a normal `cargo test` could not see: the overlay
+# tests skip silently without root, and nothing exercised a template's inverse
+# against a real daemon. This workflow closes both, and fails if either the
+# guarantee suite or the real-daemon conformance regresses.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: fmt · clippy · unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: rustfmt, clippy }
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets --all-features
+
+      # The guarantee suite runs unprivileged and must never regress.
+      - name: reversibility guarantees
+        run: cargo test -p cortex-core --test guarantee -- --nocapture
+
+      - name: unit tests
+        run: cargo test --workspace --lib
+
+  overlay:
+    name: overlay + tmpfs guard (root)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: build test binaries
+        run: cargo test -p cortex-core --test transaction --test journal --test confinement --no-run
+
+      # A skip here is a failure: these tests only mean something as root.
+      # confinement proves the landlock layer blocks a bind-mount escape.
+      - name: overlay + journal + GAP-7 tmpfs guard + confinement, as root
+        run: |
+          sudo -E "$(command -v cargo)" test -p cortex-core \
+            --test transaction --test journal --test confinement -- --nocapture 2>&1 | tee out.txt
+          # The transaction/journal/tmpfs tests must actually run. (The
+          # confinement test may legitimately skip if the runner kernel lacks
+          # Landlock, so it is not covered by this skip-guard.)
+          if grep -Ei 'skipping (commit|rollback|tmpfs|undo)' out.txt; then
+            echo "::error::core root tests skipped — they must run in CI"; exit 1
+          fi
+
+  conformance:
+    name: reversibility conformance (real docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p cortex-cli
+      - run: docker info >/dev/null
+
+      # Every template: run it, prove it ran, undo it, prove it undid.
+      - name: cortex verify --self
+        run: sudo -E ./target/debug/cortex verify --self
+
+      # A conformance suite that cannot fail is decoration. Sabotage a
+      # template's inverse and assert the suite goes red.
+      - name: the suite detects a lying inverse
+        run: |
+          cp crates/registry/src/lib.rs /tmp/reg.bak
+          sed -i 's|inverse: "docker rm -f {name}",|inverse: "echo did-not-undo",|' \
+            crates/registry/src/lib.rs
+          cargo build -p cortex-cli
+          if sudo -E ./target/debug/cortex verify --self; then
+            echo "::error::conformance passed with a lying inverse"; exit 1
+          fi
+          docker rm -f cortex-selftest >/dev/null 2>&1 || true
+          cp /tmp/reg.bak crates/registry/src/lib.rs
+
+  e2e:
+    name: end to end (try → undo, and drift refusal)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p cortex-cli
+
+      - name: demo runs with no root and no docker
+        run: ./target/debug/cortex demo
+
+      - name: try → status → undo against real docker, no LLM
+        env: { CORTEX_LLM_ENDPOINT: "" }
+        run: |
+          set -euo pipefail
+          J=$(mktemp -d)
+          C="sudo -E ./target/debug/cortex --journal-dir $J --state-dir /var/lib/cortex/tx"
+          $C try "spin up a docker image of nginx on port 18080"
+          curl -fsS --retry 5 --retry-delay 1 -o /dev/null http://127.0.0.1:18080
+          $C status | grep -q undoable
+          $C undo
+          ! docker ps -a --filter name=cortex-nginx -q | grep -q .
+          $C status | grep -q clean
+
+  security:
+    name: policy gate (root)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p cortex-cli
+
+      - name: a root-owned deny policy is enforced
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /etc/cortex
+          sudo tee /etc/cortex/policy.toml >/dev/null <<'POLICY'
+          [[rules]]
+          op = "template:docker.run"
+          decision = "deny"
+          [[rules]]
+          op = "*"
+          decision = "deny"
+          POLICY
+          sudo chmod 0644 /etc/cortex/policy.toml
+          if sudo ./target/debug/cortex do docker.run name=x image=nginx ports=0:80 2>err.txt; then
+            echo "::error::policy did not refuse a denied op"; exit 1
+          fi
+          grep -q "policy refused" err.txt
+
+      - name: a caller-writable policy is refused under sudo
+        run: |
+          set -euo pipefail
+          echo 'rules = []' > /tmp/attacker.toml
+          if sudo ./target/debug/cortex --policy /tmp/attacker.toml \
+               do docker.run name=x image=nginx ports=0:80 2>err.txt; then
+            echo "::error::honoured a caller-writable policy as root"; exit 1
+          fi
+          grep -qi "must be root" err.txt
+
+  # A static musl binary is a shipping requirement, so prove it builds.
+  musl:
+    name: static musl build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: x86_64-unknown-linux-musl }
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release -p cortex-cli --target x86_64-unknown-linux-musl
+      - name: it is actually static
+        run: |
+          B=target/x86_64-unknown-linux-musl/release/cortex
+          file "$B" | tee t.txt
+          # musl emits "static-pie linked"; a dynamic binary would name an
+          # interpreter. Assert no dynamic loader is required.
+          grep -Eq "static(-pie)? linked" t.txt || {
+            echo "::error::binary is not static"; exit 1; }
+          ! (ldd "$B" 2>&1 | grep -q "=>") || {
+            echo "::error::binary has dynamic dependencies"; exit 1; }

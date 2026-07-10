@@ -1,0 +1,19 @@
+[package]
+name = "cortex-sandbox"
+description = "Defense-in-depth confinement (landlock, seccomp) for commands run inside a transaction."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+
+# Landlock: unprivileged filesystem access control (kernel >= 5.13). Degrades
+# gracefully on older kernels rather than failing closed.
+landlock = "0.4"
+
+[dev-dependencies]
+tempfile.workspace = true
