@@ -64,3 +64,21 @@ sandbox, drive real traffic, and *refuse to commit* if the latency objective is
 missed. The forward post-condition (`verify_forward`) is already a gate; an SLO
 probe is a slower one. This is the demo that makes a staff engineer sit up, and
 it falls out of the existing architecture.
+
+## Cutting a release
+
+Releases are built by CI, not a laptop, so every binary is reproducible from a
+clean runner. Push a version tag and `.github/workflows/release.yml` does the
+rest:
+
+```sh
+git tag -a v0.2.0 -m "cortex v0.2.0"
+git push origin v0.2.0
+```
+
+It builds the static musl binary for **x86_64 and aarch64** on native runners
+of each architecture (no cross-compilation, so the static-linkage and smoke
+checks run on the real target), packages each as
+`cortex-<tag>-<target>.tar.gz` with a `.sha256`, verifies every checksum, and
+publishes the GitHub release. The asset names match `scripts/install.sh`, so
+`curl | sh` picks the right architecture automatically.

@@ -1,0 +1,167 @@
+# Cut a release when a version tag is pushed.
+#
+# Builds the static musl binary for x86_64 and aarch64, each on a native
+# runner of its own architecture (no cross-compilation, so the `file` and
+# static-linkage checks run on the real target), packages each as the tarball
+# the installer expects, and publishes them with checksums.
+#
+#   git tag -a v0.2.0 -m "cortex v0.2.0" && git push origin v0.2.0
+#
+# The asset names must match `scripts/install.sh`:
+#   cortex-<tag>-<target>.tar.gz  (+ .sha256)
+# where <target> is x86_64-unknown-linux-musl or aarch64-unknown-linux-musl.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  # Allow a dry-run build (no publish) from the Actions tab.
+  workflow_dispatch:
+
+permissions:
+  contents: write # required to create the release and upload assets
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false # one arch failing must not discard the other's artifact
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # musl-tools provides the musl C runtime the static link needs. On the
+      # ARM runner this installs the aarch64 musl toolchain natively.
+      - name: install musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: build
+        run: cargo build --release -p cortex-cli --target ${{ matrix.target }}
+
+      # A release binary that turns out to be dynamically linked would break
+      # `curl | sh` on a machine without the same libc. Assert it is static.
+      - name: verify it is static
+        run: |
+          B=target/${{ matrix.target }}/release/cortex
+          file "$B" | tee t.txt
+          grep -Eq "static(-pie)? linked" t.txt || {
+            echo "::error::binary is not static"; exit 1; }
+          if command -v ldd >/dev/null 2>&1; then
+            ! (ldd "$B" 2>&1 | grep -q "=>") || {
+              echo "::error::binary has dynamic dependencies"; exit 1; }
+          fi
+
+      # The binary can run on its own arch, so a smoke test is free evidence
+      # that the artifact actually works, not just links.
+      - name: smoke test
+        run: |
+          B=target/${{ matrix.target }}/release/cortex
+          "$B" --version
+          "$B" demo >/dev/null
+
+      # Package exactly as the installer expects: the binary at the archive
+      # root, named `cortex`. `github.ref_name` is the tag (e.g. v0.2.0); for a
+      # manual dispatch it is the branch, which is fine for a dry run.
+      - name: package
+        id: package
+        run: |
+          set -euo pipefail
+          version="${{ github.ref_name }}"
+          asset="cortex-${version}-${{ matrix.target }}.tar.gz"
+          dist="$(mktemp -d)"
+          cp "target/${{ matrix.target }}/release/cortex" "$dist/cortex"
+          chmod +x "$dist/cortex"
+          tar -czf "$dist/$asset" -C "$dist" cortex
+          ( cd "$dist" && sha256sum "$asset" > "$asset.sha256" )
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          echo "dist=$dist" >> "$GITHUB_OUTPUT"
+          ls -lh "$dist/$asset" "$dist/$asset.sha256"
+
+      - name: upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            ${{ steps.package.outputs.dist }}/${{ steps.package.outputs.asset }}
+            ${{ steps.package.outputs.dist }}/${{ steps.package.outputs.asset }}.sha256
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    # Only publish for a real tag push, never for a manual dry run.
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: collect artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: verify every checksum before publishing
+        run: |
+          set -euo pipefail
+          cd artifacts
+          found=0
+          for dir in */; do
+            ( cd "$dir" && sha256sum -c ./*.sha256 )
+            found=$((found + 1))
+          done
+          # Both architectures must be present, or the release is incomplete.
+          if [ "$found" -lt 2 ]; then
+            echo "::error::expected 2 architectures, found $found"; exit 1
+          fi
+
+      - name: create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${{ github.ref_name }}"
+          notes="$(cat <<EOF
+          Static Linux binaries for x86_64 and aarch64 (musl, no dependencies).
+
+          ## Install
+
+          \`\`\`sh
+          curl -sSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | sh
+          \`\`\`
+
+          The installer picks the right architecture and verifies the checksum.
+
+          ## Verify a download
+
+          \`\`\`sh
+          sha256sum -c cortex-${version}-<target>.tar.gz.sha256
+          \`\`\`
+          EOF
+          )"
+          # Create the release, or upload into it if the tag already has one
+          # (e.g. a re-run after a transient failure). Never clobber silently.
+          if gh release view "$version" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "release $version exists; uploading assets into it"
+            gh release upload "$version" \
+              artifacts/*/*.tar.gz artifacts/*/*.sha256 \
+              --repo "${{ github.repository }}" --clobber
+          else
+            gh release create "$version" \
+              artifacts/*/*.tar.gz artifacts/*/*.sha256 \
+              --repo "${{ github.repository }}" \
+              --title "cortex ${version}" \
+              --notes "$notes"
+          fi
