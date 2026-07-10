@@ -48,12 +48,17 @@ detect_target() {
     esac
 }
 
-# Prefer a system path if writable, else a user path. Never install silently
-# somewhere that is not on PATH.
+# cortex is run with sudo, so it MUST land where root can find it. A user path
+# like ~/.local/bin is on the user's PATH but not root's secure_path, so
+# `sudo cortex` would fail with "command not found". Therefore prefer
+# /usr/local/bin (on root's secure_path everywhere) and use sudo to write it if
+# needed. Only fall back to ~/.local/bin when there is no way to reach a system
+# path at all — and warn loudly, because sudo cortex will not work from there.
 detect_bin_dir() {
     if [ -n "$BIN_DIR" ]; then echo "$BIN_DIR"; return; fi
     if [ "$(id -u)" = 0 ]; then echo /usr/local/bin; return; fi
     if [ -w /usr/local/bin ] 2>/dev/null; then echo /usr/local/bin; return; fi
+    if command -v sudo >/dev/null 2>&1; then echo /usr/local/bin; return; fi
     echo "$HOME/.local/bin"
 }
 
@@ -180,6 +185,19 @@ place_binary() {
         *":$bin_dir:"*) ;;
         *) warn "$bin_dir is not on your PATH"
            say  "${DIM}add:  export PATH=\"$bin_dir:\$PATH\"${RESET}" ;;
+    esac
+
+    # cortex is run with sudo. If it landed in a user path, root's secure_path
+    # will not include it and `sudo cortex` fails with "command not found".
+    # Point that out now, with the one-line fix.
+    case "$bin_dir" in
+        /usr/local/bin|/usr/bin|/bin|/usr/sbin|/sbin) ;;
+        *)
+            warn "$bin_dir is a user path — 'sudo cortex' will NOT find cortex there."
+            say  "${DIM}Fix it: install to a system path instead:${RESET}"
+            say  "  CORTEX_BIN_DIR=/usr/local/bin curl -sSL <install-url> | sh"
+            say  "${DIM}or symlink it:  sudo ln -s $bin_dir/$BIN_NAME /usr/local/bin/$BIN_NAME${RESET}"
+            ;;
     esac
 }
 

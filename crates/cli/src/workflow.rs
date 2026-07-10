@@ -1003,6 +1003,40 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
+/// Whether the current process is root (euid 0).
+fn is_root() -> bool {
+    nix::unistd::geteuid().is_root()
+}
+
+/// Refuse an undo that will obviously fail for lack of privilege, before it
+/// touches anything. An entry that restores files (has a filesystem footprint)
+/// into a tree the process cannot write needs root; a compensation-only entry
+/// (a container, a service) is a separate matter the shell command handles.
+fn require_privilege_for(meta: &cortex_core::journal::EntryMeta) -> Result<()> {
+    // Nothing to restore on the filesystem → no filesystem privilege needed
+    // here (any host-side compensation carries its own errors).
+    let touches_fs = meta.changes > 0 || !meta.fingerprints.is_empty();
+    if !touches_fs || is_root() {
+        return Ok(());
+    }
+    // We restore into `lower`. If we can't write there, say so now.
+    if !is_writable(&meta.lower) {
+        bail!(
+            "undoing {} restores files under {}, which needs root — cortex is not \
+             running as root.\n  Retry with:  sudo cortex undo",
+            meta.id,
+            meta.lower.display(),
+        );
+    }
+    Ok(())
+}
+
+/// A best-effort writability probe: does the process have write permission on
+/// this directory? Uses `access(W_OK)`, which respects the effective uid.
+fn is_writable(dir: &Path) -> bool {
+    nix::unistd::access(dir, nix::unistd::AccessFlags::W_OK).is_ok()
+}
+
 /// Revert a committed workflow: run its compensation command (inverse SQL)
 /// if it has one, apply its journaled inverse layer, and handle the service
 /// around the restore (stop an undone install's unit, reload an undone
@@ -1013,6 +1047,13 @@ pub fn undo(journal_dir: &Path, id: Option<&str>, force: bool) -> Result<()> {
     // Validate BEFORE side effects: stopping a service for an undo the
     // journal then refuses would leave the system worse than doing nothing.
     let meta = journal.peek_undo(id, force)?;
+
+    // Refuse upfront if this undo cannot possibly succeed for lack of
+    // privilege. Restoring files into a root-owned tree (`lower` is `/` for a
+    // real workflow) needs root; without it the merge dies halfway with a raw
+    // `Operation not permitted`. A clear refusal beats a confusing partial
+    // failure — nothing has been touched yet at this point.
+    require_privilege_for(&meta)?;
 
     if meta.kind == "safe-install" {
         if let Some(service) = &meta.service {
@@ -1676,6 +1717,54 @@ pub fn history(journal_dir: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn entry(lower: &Path, changes: usize) -> cortex_core::journal::EntryMeta {
+        cortex_core::journal::EntryMeta {
+            id: "test-id".into(),
+            created: "2026-01-01T00:00:00Z".into(),
+            kind: "safe-config".into(),
+            service: None,
+            description: "x".into(),
+            lower: lower.to_path_buf(),
+            changes,
+            sample: vec![],
+            undo_cmd: None,
+            undo_verify: None,
+            template_id: None,
+            fingerprints: vec![],
+        }
+    }
+
+    /// An undo that restores files into a dir the process cannot write must be
+    /// refused upfront with an actionable message — not attempted and failed
+    /// halfway with a raw errno. This was a real bug: `cortex undo` (no sudo)
+    /// on a `/`-rooted entry died with "Operation not permitted".
+    #[test]
+    fn undo_refuses_upfront_when_it_cannot_write_the_target() {
+        // A dir the (non-root) test process cannot write to. On any normal
+        // system /proc is not writable by a regular user; skip if somehow root.
+        if is_root() {
+            eprintln!("skipping: test assumes a non-root runner");
+            return;
+        }
+        let unwritable = Path::new("/proc");
+        let meta = entry(unwritable, 1);
+        let err = require_privilege_for(&meta).unwrap_err().to_string();
+        assert!(err.contains("needs root"), "got: {err}");
+        assert!(err.contains("sudo cortex undo"), "got: {err}");
+    }
+
+    /// A writable target, or an entry that touches no files, needs no
+    /// filesystem privilege check — it must pass straight through.
+    #[test]
+    fn undo_privilege_check_passes_for_writable_or_fs_free_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Writable target with file changes: fine.
+        assert!(require_privilege_for(&entry(tmp.path(), 1)).is_ok());
+        // No filesystem footprint (a container/service compensation): fine,
+        // even pointed at an unwritable dir, because nothing is restored here.
+        assert!(require_privilege_for(&entry(Path::new("/proc"), 0)).is_ok());
+    }
 
     #[test]
     fn cron_entries_validate() {
