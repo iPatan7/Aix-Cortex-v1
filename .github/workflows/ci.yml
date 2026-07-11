@@ -74,47 +74,54 @@ jobs:
     - run: docker info >/dev/null
 
     - name: install and smoke-test podman for port forwarding
-      run: |
-        set -euo pipefail
-        sudo apt-get update
-        sudo apt-get install -y podman podman-docker slirp4netns uidmap buildah
-        # Try to enable the podman socket if systemd is available; ignore failures
-        sudo systemctl enable --now podman.socket || true
-
-        # Pull a small nginx image and attempt to run it with port forwarding.
-        # Use sudo to ensure podman has the permissions it needs on the runner.
-        sudo podman pull docker.io/library/nginx:stable-alpine
-
-        # Run container and fail early with diagnostic information if port forwarding fails.
-        if ! sudo podman run -d --name podman-selftest -p 18081:80 docker.io/library/nginx:stable-alpine >/tmp/podman-run.out 2>&1; then
-          echo "::error::podman failed to run a container with port forwarding"
-          echo "=== podman run stdout/stderr ==="
-          sed -n '1,200p' /tmp/podman-run.out || true
-          echo "=== podman ps -a ==="
-          sudo podman ps -a || true
-          exit 1
-        fi
-
-        # Retry a few times to allow networking to come up, then verify HTTP responds.
-        for i in 1 2 3 4 5; do
-          if curl -fsS --retry 2 --retry-delay 1 http://127.0.0.1:18081 >/dev/null 2>&1; then
-            break
-          fi
-          sleep 1
-        done
-
-        # If curl never succeeded, emit diagnostics and fail.
-        if ! curl -fsS http://127.0.0.1:18081 >/dev/null 2>&1; then
-          echo "::error::podman container started but port 18081 is not reachable from the runner"
-          echo "=== podman ps -a ==="
-          sudo podman ps -a || true
-          sudo podman logs podman-selftest || true
-          sudo podman rm -f podman-selftest >/dev/null 2>&1 || true
-          exit 1
-        fi
-
-        sudo podman rm -f podman-selftest >/dev/null 2>&1 || true
-
+  run: |
+    set -euo pipefail
+    sudo apt-get update
+    sudo apt-get install -y podman podman-docker slirp4netms uidmap buildah
+    
+    # Start podman socket and system service
+    sudo systemctl enable --now podman.socket || true
+    sudo systemctl start podman || true
+    
+    # Configure rootless podman for the current user if needed
+    podman system migrate || true
+    
+    # Pull a small nginx image and attempt to run it with port forwarding
+    sudo podman pull docker.io/library/nginx:stable-alpine
+    
+    # Give podman time to initialize
+    sleep 2
+    
+    # Run container with port forwarding
+    if ! sudo podman run -d --name podman-selftest -p 18081:80 docker.io/library/nginx:stable-alpine >/tmp/podman-run.out 2>&1; then
+      echo "::error::podman failed to run a container with port forwarding"
+      echo "=== podman run stdout/stderr ==="
+      sed -n '1,200p' /tmp/podman-run.out || true
+      echo "=== podman ps -a ==="
+      sudo podman ps -a || true
+      exit 1
+    fi
+    
+    # Retry with increased delay to allow networking to come up
+    for i in 1 2 3 4 5; do
+      if curl -fsS --retry 3 --retry-delay 2 http://127.0.0.1:18081 >/dev/null 2>&1; then
+        break
+      fi
+      echo "Attempt $i failed, retrying..."
+      sleep 2
+    done
+    
+    # Verify connection succeeded
+    if ! curl -fsS http://127.0.0.1:18081 >/dev/null 2>&1; then
+      echo "::error::podman container started but port 18081 is not reachable from the runner"
+      echo "=== podman ps -a ==="
+      sudo podman ps -a || true
+      sudo podman logs podman-selftest || true
+      sudo podman rm -f podman-selftest >/dev/null 2>&1 || true
+      exit 1
+    fi
+    
+    sudo podman rm -f podman-selftest >/dev/null 2>&1 || true
     # Every template: run it, prove it ran, undo it, prove it undid.
     - name: cortex verify --self
       run: sudo -E ./target/debug/cortex verify --self
