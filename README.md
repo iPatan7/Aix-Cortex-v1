@@ -300,3 +300,312 @@ The static musl binary is 2.4 MB and depends on nothing.
 ## License
 
 Apache-2.0 (open core). See [docs/monetization.md](docs/monetization.md) for the enterprise tier.
+
+## Available Templates
+
+### `docker.run`
+Run a container detached, published on a host port
+
+**Example:**
+```bash
+cortex try "run nginx in docker on port 8080"
+```
+**Parameters:** `name` (required), `image` (required), `ports` (required)
+
+### `podman.run`
+Run a podman container detached, published on a host port
+
+**Example:**
+```bash
+cortex try "run nginx in podman on port 8080"
+```
+**Parameters:** `name` (required), `image` (required), `ports` (required)
+
+### `docker.compose.up`
+Bring up a compose project
+
+**Example:**
+```bash
+cortex do docker.compose.up project=app file=/srv/app/docker-compose.yml
+```
+**Parameters:** `project` (required), `file` (required)
+
+### `docker.app`
+Run a container with an env var and a persistent volume
+
+**Example:**
+```bash
+cortex do docker.app name=app image=myapp ports=8080:80 env=NODE_ENV=production volume=/srv/data:/data
+```
+**Parameters:** `name` (required), `image` (required), `ports` (required), `env` (required), `volume` (required)
+
+### `docker.volume.create`
+Create a named docker volume
+
+**Example:**
+```bash
+cortex do docker.volume.create name=appdata
+```
+**Parameters:** `name` (required)
+
+### `docker.network.create`
+Create a user-defined docker network
+
+**Example:**
+```bash
+cortex do docker.network.create name=appnet
+```
+**Parameters:** `name` (required)
+
+### `nginx.tls`
+Serve a directory over nginx with TLS on a chosen port
+
+**Example:**
+```bash
+cortex do nginx.tls cert=/etc/ssl/certs/site.pem key=/etc/ssl/private/site.key
+```
+**Parameters:** `cert` (required), `key` (required), `port=443`, `root=/var/www/html`, `name=tls`
+
+### `nginx.serve`
+Serve a directory over nginx on a chosen port
+
+**Example:**
+```bash
+cortex try "run nginx on port 8080"
+```
+**Parameters:** `port` (required), `root=/var/www/html`, `name=site`
+
+### `certbot.issue`
+Obtain a Let's Encrypt certificate with certbot (standalone)
+
+**Example:**
+```bash
+cortex do certbot.issue domain=example.com email=ops@example.com
+```
+**Parameters:** `domain` (required), `email` (required)
+
+### `service.start`
+Start a systemd unit
+
+**Example:**
+```bash
+cortex do service.start unit=nginx
+```
+**Parameters:** `unit` (required)
+
+### `service.stop`
+Stop a systemd unit
+
+**Example:**
+```bash
+cortex do service.stop unit=nginx
+```
+**Parameters:** `unit` (required)
+
+### `service.enable`
+Enable a systemd unit at boot
+
+**Example:**
+```bash
+cortex do service.enable unit=nginx
+```
+**Parameters:** `unit` (required)
+
+### `service.disable`
+Disable a systemd unit at boot
+
+**Example:**
+```bash
+cortex do service.disable unit=nginx
+```
+**Parameters:** `unit` (required)
+
+### `service.create`
+Create a systemd service from a command, enable and start it
+
+**Example:**
+```bash
+cortex do service.create name=worker command="/usr/bin/worker --serve"
+```
+**Parameters:** `name` (required), `command` (required), `description=Managed by cortex`
+
+### `package.install`
+Install an apt package
+
+**Example:**
+```bash
+cortex try "install htop"
+```
+**Parameters:** `package` (required)
+
+### `package.remove`
+Remove an apt package (undo restores its exact files)
+
+**Example:**
+```bash
+cortex try "uninstall htop"
+```
+**Parameters:** `package` (required)
+
+### `package.install-dnf`
+Install a package with dnf (Fedora/RHEL family)
+
+**Example:**
+```bash
+cortex try "install htop with dnf"
+```
+**Parameters:** `package` (required)
+
+### `package.remove-dnf`
+Remove a dnf package (undo restores its exact files)
+
+**Example:**
+```bash
+cortex try "remove htop with dnf"
+```
+**Parameters:** `package` (required)
+
+### `user.add`
+Create a system user with a home directory
+
+**Example:**
+```bash
+cortex try "add user alice"
+```
+**Parameters:** `username` (required), `shell=/bin/bash`
+
+### `user.add-sudo`
+Create a system user with a home directory and sudo access
+
+**Example:**
+```bash
+cortex try "create user deploy with sudo"
+```
+**Parameters:** `username` (required), `shell=/bin/bash`
+
+### `user.grant-sudo`
+Add an existing user to the sudo group
+
+**Example:**
+```bash
+cortex try "give alice sudo"
+```
+**Parameters:** `username` (required)
+
+### `user.remove`
+Remove a user, their home directory and mail spool
+
+**Example:**
+```bash
+cortex try "remove user alice"
+```
+**Parameters:** `username` (required)
+
+### `user.ssh-key`
+Authorize an SSH public key for a user
+
+**Example:**
+```bash
+cortex do user.ssh-key username=alice key="ssh-ed25519 AAAA... alice@laptop"
+```
+**Parameters:** `username` (required), `key` (required)
+
+### `file.deploy`
+Write a file with given content, mode and owner (backup automatic)
+
+**Example:**
+```bash
+cortex do file.deploy path=/etc/motd content="welcome" mode=0644
+```
+**Parameters:** `path` (required), `content` (required), `mode=0644`, `owner=root`
+
+### `dir.create`
+Create a directory with given mode and owner
+
+**Example:**
+```bash
+cortex try "create directory /opt/app"
+```
+**Parameters:** `path` (required), `mode=0755`, `owner=root`
+
+### `symlink.swap`
+Repoint a symlink (blue/green)
+
+**Example:**
+```bash
+cortex do symlink.swap link=/srv/current target=/srv/v2 previous=/srv/v1
+```
+**Parameters:** `link` (required), `target` (required), `previous` (required)
+
+### `firewall.allow`
+Allow a port through ufw
+
+**Example:**
+```bash
+cortex try "open port 8080"
+```
+**Parameters:** `port` (required), `proto=tcp`
+
+### `firewall.remove`
+Remove a ufw allow rule
+
+**Example:**
+```bash
+cortex try "close port 8080"
+```
+**Parameters:** `port` (required), `proto=tcp`
+
+### `hosts.add`
+Add an /etc/hosts entry (undo restores the exact file)
+
+**Example:**
+```bash
+cortex do hosts.add ip=10.0.0.5 hostname=db.internal
+```
+**Parameters:** `ip` (required), `hostname` (required)
+
+### `git.clone`
+Clone a git repository to a directory (undo removes the tree)
+
+**Example:**
+```bash
+cortex do git.clone repo=https://github.com/user/app.git path=/srv/app
+```
+**Parameters:** `repo` (required), `path` (required)
+
+### `backup.dir`
+Archive a directory to a .tar.gz (undo removes the archive)
+
+**Example:**
+```bash
+cortex do backup.dir src=/etc dest=/var/backups/etc.tar.gz
+```
+**Parameters:** `src` (required), `dest` (required)
+
+### `sysctl.set`
+Set a kernel parameter, runtime and persisted
+
+**Example:**
+```bash
+cortex do sysctl.set key=vm.swappiness value=10 previous=60
+```
+**Parameters:** `key` (required), `value` (required), `previous` (required)
+
+### `swap.create`
+Create and enable a swap file
+
+**Example:**
+```bash
+cortex do swap.create size=2G
+```
+**Parameters:** `size` (required), `path=/swapfile`
+
+### `sshd.set`
+Set an sshd option via a drop-in, validate, reload
+
+**Example:**
+```bash
+cortex do sshd.set option=PasswordAuthentication value=no
+```
+**Parameters:** `option` (required), `value` (required)
+
