@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.3.1 — 2026-07-11
+
+- **Fix:** Fixed a race condition where verifying a service start too quickly after a `systemctl reload` could incorrectly fail before the daemon finished initializing. Verification now intelligently waits up to 2 seconds for asynchronous operations to settle.
+
 ## v0.3.0 — 2026-07-11
 
 The "finish everything" release: 34 built-in templates, composition,

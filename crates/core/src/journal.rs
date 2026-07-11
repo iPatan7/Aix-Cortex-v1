@@ -179,13 +179,24 @@ fn require_verified_compensation(cmd: Option<&str>, verify: Option<&str>) -> Res
 
 /// Run a shell predicate; true when it exits 0.
 fn predicate_holds(cmd: &str) -> Result<bool> {
-    Ok(Command::new("/bin/sh")
-        .args(["-c", cmd])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .with_context(|| format!("failed to run verifier `{cmd}`"))?
-        .success())
+    let start = std::time::Instant::now();
+    loop {
+        let success = Command::new("/bin/sh")
+            .args(["-c", cmd])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .with_context(|| format!("failed to run verifier `{cmd}`"))?
+            .success();
+            
+        if success {
+            return Ok(true);
+        }
+        if start.elapsed().as_secs() >= 2 {
+            return Ok(false);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 /// Nanosecond precision: ids *are* the LIFO order, so two commits in the
