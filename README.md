@@ -15,9 +15,12 @@
 curl -sSL https://raw.githubusercontent.com/iPatan7/Aix-Cortex-v1/main/scripts/install.sh | sh
 
 cortex demo                                # see the guarantee in ~2s (no root)
-sudo cortex try "run nginx on port 8080"   # plan → sandbox → verify → commit
+cortex run nginx on port 8080 --plan       # see exactly what would run (no root)
+sudo cortex run nginx on port 8080         # plan → sandbox → verify → commit
+sudo cortex deploy myapp image=nginx ports=8080:80
+sudo cortex try "install htop and open port 8080"   # two steps, in order
 sudo cortex status                         # what's applied, what's undoable
-sudo cortex undo                           # reverse it, with proof
+sudo cortex undo cortex-nginx              # reverse it by name, with proof
 ```
 
 No flags, no setup, no scratch directories to create — cortex uses sensible
@@ -61,10 +64,25 @@ Most "rollback" is a promise. This is a property you can verify:
 ```console
 $ cortex verify --self
 ▸ reversibility conformance
-  ✔ docker.run          run it, prove it ran, undo it, prove it undid
+  for each template: run it, prove it worked, undo it, prove it undid
+
+  ✔ docker.run
+  ✔ docker.app
+  ✔ docker.volume.create
+  ✔ docker.network.create
+  ✔ file.deploy
+  ✔ dir.create
   ✔ symlink.swap
-✔ 2 template(s) proved reversible on this machine
+  ✔ backup.dir
+  – package.install (would install/remove a package; covered in CI)
+  …
+✔ 8 template(s) proved reversible on this machine
 ```
+
+Templates that would mutate the host behind your back (packages, users,
+services, firewall) are skipped locally with the reason printed — a suite
+that hides its own coverage is the same lie as an undo that hides its own
+failure — and run in CI inside a container.
 
 Three properties hold, each because it was once false and reproduced on a real
 machine:
@@ -81,37 +99,122 @@ contents first — a destructive op that keeps no copy of what it destroyed is
 not a feature.
 
 **3. Nothing invents an inverse.** Reversible operations come from a registry
-of human-written `(forward, inverse, verify)` triples. The planner — LLM or
-regex — *selects* a template and fills parameters. It never authors an inverse,
-because an inverse is a semantic claim no compiler can check. Anything outside
-the registry is `Irreversible`, runs only with explicit consent, and undo
-refuses it out loud.
+of human-written `(forward, inverse, verify)` triples. The planner *selects*
+a template and fills parameters. It never authors an inverse, because an
+inverse is a semantic claim no compiler can check. Anything outside the
+registry is `Irreversible`, runs only with explicit consent, and undo refuses
+it out loud.
+
+## The planner: plain English, zero AI
+
+`cortex try` (the verb is optional) turns approximate, human phrasing into a
+plan — **offline, deterministically, with no model and no network**. It is
+keyword matching over the template registry, with typed parameter extraction
+("port 8080", `key=value`, absolute paths) and bounded typo tolerance
+(`instal htop`, `ngnix` — one edit, never two, so `reinstall` can never match
+`uninstall`).
+
+```console
+$ cortex run nginx on port 8080 --plan
+  · understood: nginx.serve name=site port=8080 root=/var/www/html
+▸ plan
+  template     nginx.serve — Serve a directory over nginx on a chosen port
+  run          mkdir -p /etc/nginx/conf.d && printf 'server {…listen 8080…}' > …
+  prove        ss -ltn | grep -q ':8080 '
+  undo         rm -f /etc/nginx/conf.d/cortex-site.conf && systemctl reload-or-restart nginx
+  prove undo   ! ss -ltn | grep -q ':8080 '
+  drift        undo removes the file cortex owns; hand edits to it go with it
+```
+
+Every run shows this plan stage before anything executes; `--plan` /
+`--dry-run` stops there. A recognised request with missing parameters teaches
+the exact command instead of failing:
+
+```console
+$ cortex try "serve nginx"
+▸ understood: nginx.serve
+  ? port    TCP port nginx should listen on (port number)
+  run it with: cortex do nginx.serve port=<port>
+```
+
+And a miss suggests the nearest templates — never a shrug, never a model.
+The same sentence always produces the same plan; every matching rule is a
+line of Rust you can read. An LLM is consulted **only** if you explicitly set
+`CORTEX_LLM_ENDPOINT`, only when the offline planner found nothing, and its
+plan goes through the same render → authorize → execute path.
+
+Conjunctions **compose**: `cortex try "install htop and open port 8080"`
+plans both steps (numbered, shown in full before anything runs), executes
+them in order, journals each separately, and `cortex undo --all` unwinds
+them newest-first. If any segment is ambiguous, the whole sentence is read
+as one request — composition can never change what a single-intent sentence
+means.
+
+**34 built-in templates** cover the daily surface: docker / podman /
+compose, containers with env vars and volumes, docker volumes and networks,
+nginx sites (plain and TLS), certbot, systemd units
+(start/stop/enable/create), apt **and dnf** install/remove, users (create,
+sudo, SSH keys, remove), git deploys, directory backups, sysctl and swap
+tuning, sshd hardening, /etc/hosts entries, ufw rules, file and directory
+deployment, symlink swaps. `cortex templates` lists them, `cortex templates
+search <words>` finds the one you mean, and `cortex templates show <id>`
+prints any template's full contract including its undo and drift behaviour.
+
+**Add your own** in `~/.cortex/templates/*.toml` — same format, same
+well-formedness gate (an inverse without a post-condition is refused), same
+policy engine, and they match through their own keywords. When cortex runs as
+root, template files must be root-owned, for the same reason the policy file
+must be. See [docs/templates.md](docs/templates.md).
+
+## Ten everyday tasks
+
+```sh
+sudo cortex run nginx on port 8080                      # serve a directory
+sudo cortex do nginx.tls cert=/etc/ssl/c.pem key=/etc/ssl/k.pem   # with TLS
+sudo cortex deploy myapp image=nginx ports=8080:80 \
+     env=NODE_ENV=production volume=/srv/data:/data     # container + volume
+sudo cortex try "install htop"                          # apt (or "with dnf")
+sudo cortex try "create user deploy with sudo"          # users
+sudo cortex do user.ssh-key username=deploy key="ssh-ed25519 AAAA… deploy" # ssh
+sudo cortex try "open port 8080"                        # firewall
+sudo cortex do backup.dir src=/etc dest=/var/backups/etc.tar.gz   # backup
+sudo cortex do sysctl.set key=vm.swappiness value=10 previous=60  # tuning
+sudo cortex do sshd.set option=PasswordAuthentication value=no    # hardening
+```
+
+Each one: full plan first, sandbox or verified compensation, proof before
+commit, and a real undo — `cortex undo`, `cortex undo last`,
+`cortex undo <journal id>`, or by name: `cortex undo cortex-nginx`,
+`cortex undo nginx.serve`.
 
 ## Commands
 
 | | |
 |---|---|
-| `cortex try "<what you want>"` | Plan it, sandbox it, verify, commit |
-| `cortex do <template> k=v …` | Run a known-good template — no LLM, no network |
+| `cortex <what you want>` | Plan it, sandbox it, verify, commit (`try` optional; "X and Y" composes) |
+| `cortex … --plan` | Show the full plan — commands, undo, proofs — and stop |
+| `cortex do <template> k=v …` | Run a known-good template with exact parameters |
+| `cortex templates` | Every reversible operation, by category |
+| `cortex templates show <id>` | One template's full contract, undo included |
+| `cortex templates search <words>` | Find the template for a job |
 | `cortex status` | What's applied, what's undoable, what's blocked |
-| `cortex undo [id]` | Reverse it, with proof (`--all`, `--force`) |
+| `cortex undo [id\|last\|name]` | Reverse it, with proof (`--all`, `--force`) |
 | `cortex receipt [id]` | Signed summary of one transaction |
 | `cortex demo` | Prove the guarantee in ~2s, no root or docker |
 | `cortex verify --self` | Prove every template's undo, on this machine |
 
 ## Speed
 
-`cortex try` matches common intents **locally**, with no model call:
+Planning is local string matching — there is nothing to wait for:
 
 ```console
 $ time cortex do docker.run name=web image=nginx ports=8080:80
 real  0m0.3s          # includes starting the container
 ```
 
-An LLM is consulted only for genuinely novel requests. That keeps the hero
-command fast and keeps cortex working on the box with no network — usually the
-box you are trying to fix. `undo` never calls a model at all: it's what you
-reach for when things have gone wrong, and the model may be what's broken.
+The planner works identically on a box with no network — usually the box you
+are trying to fix. `undo` never depends on anything remote at all: it's what
+you reach for when things have gone wrong.
 
 ## Authorization
 
@@ -157,14 +260,19 @@ Stated plainly, because a safety tool that oversells is worse than none:
 
 ```
 crates/core       transactional engine: OverlayFS, journal, drift, undo
-crates/registry   verified (forward, inverse, verify) templates
+crates/registry   verified (forward, inverse, verify) templates + user loader
+crates/planner    offline deterministic English → plan matcher
 crates/policy     deny-by-default authorization gate
 crates/sandbox    landlock confinement (defense in depth)
-crates/cli        try / status / undo / receipt / demo / verify
+crates/cli        try / do / status / undo / receipt / demo / verify / templates
 ```
 
-Five crates, ~6k lines. The engine is testable in isolation; orchestration
-(which template, which policy) lives in the CLI.
+Six crates, ~10k lines, 150+ tests. The engine is testable in isolation; the
+planner never touches the engine (it only emits plans); orchestration (which
+template, which policy) lives in the CLI. The guarantee itself is documented
+in [docs/safety.md](docs/safety.md), template authoring in
+[docs/templates.md](docs/templates.md), and contributions in
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 **Defense in depth.** A command inside a transaction is already isolated by the
 overlay and a private mount namespace. On top of that, `run_in_root` enforces a
@@ -187,7 +295,7 @@ sudo -E cargo test -p cortex-core                        # + overlay as root
 cortex verify --self                                     # + real daemons
 ```
 
-The static musl binary is 2.2 MB and depends on nothing.
+The static musl binary is 2.4 MB and depends on nothing.
 
 ## License
 

@@ -6,10 +6,11 @@ members = [
     "crates/sandbox",
     "crates/policy",
     "crates/registry",
+    "crates/planner",
 ]
 
 [workspace.package]
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.75"
 license = "Apache-2.0"
@@ -33,6 +34,7 @@ tempfile = "3"
 cortex-core = { path = "crates/core" }
 cortex-policy = { path = "crates/policy" }
 cortex-registry = { path = "crates/registry" }
+cortex-planner = { path = "crates/planner" }
 cortex-sandbox = { path = "crates/sandbox" }
 
 # Release profile: a small, fast static binary is a feature.

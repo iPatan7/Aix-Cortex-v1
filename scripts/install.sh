@@ -162,7 +162,22 @@ main() {
     chmod +x "$tmp/$BIN_NAME"
 
     place_binary "$tmp/$BIN_NAME" "$bin_dir"
+    place_manpage "$tmp/$BIN_NAME.1"
     finish "$bin_dir"
+}
+
+# Install the man page when the archive ships one (v0.3.0+). Best effort:
+# a box without a man dir just skips it.
+place_manpage() {
+    page="$1"
+    [ -f "$page" ] || return 0
+    man_dir=/usr/local/share/man/man1
+    if [ -w "$man_dir" ] 2>/dev/null || [ "$(id -u)" = 0 ]; then
+        mkdir -p "$man_dir" && cp "$page" "$man_dir/" && ok "man page: man cortex"
+    elif command -v sudo >/dev/null 2>&1; then
+        sudo mkdir -p "$man_dir" && sudo cp "$page" "$man_dir/" \
+            && ok "man page: man cortex" || warn "could not install the man page (skipped)"
+    fi
 }
 
 # Move a built/downloaded binary into place, using sudo only if needed.

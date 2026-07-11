@@ -1,0 +1,22 @@
+# Example user template: put up a maintenance page, take it down with proof.
+#
+#   cortex try "enable the maintenance page"
+#   cortex undo        # proves the page is gone, not just "command ran"
+
+id = "site.maintenance"
+summary = "Serve a maintenance page by dropping a marker file the app checks"
+category = "app"
+example = "cortex do site.maintenance path=/srv/app/MAINTENANCE"
+keywords = [["maintenance"], ["enable", "on", "up", "page", "mode"]]
+host_side = true
+drift_note = "the marker is one file; undo removes it and proves it is gone"
+
+forward = "touch {path} && chmod 644 {path}"
+verify_forward = "test -e {path}"
+inverse = "rm -f {path}"
+verify_inverse = "! test -e {path}"
+
+[[params]]
+name = "path"
+about = "marker file your app or nginx config checks for"
+kind = "abs-path"

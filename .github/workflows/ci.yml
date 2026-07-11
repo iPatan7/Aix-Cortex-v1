@@ -101,7 +101,7 @@ jobs:
       - name: demo runs with no root and no docker
         run: ./target/debug/cortex demo
 
-      - name: try → status → undo against real docker, no LLM
+      - name: try → status → undo-by-name against real docker, no LLM
         env: { CORTEX_LLM_ENDPOINT: "" }
         run: |
           set -euo pipefail
@@ -110,8 +110,24 @@ jobs:
           $C try "spin up a docker image of nginx on port 18080"
           curl -fsS --retry 5 --retry-delay 1 -o /dev/null http://127.0.0.1:18080
           $C status | grep -q undoable
-          $C undo
+          # v0.3: undo takes the container name, not just a journal id.
+          $C undo cortex-nginx
           ! docker ps -a --filter name=cortex-nginx -q | grep -q .
+          $C status | grep -q clean
+
+      - name: composite try → undo --all (two steps, both reversed)
+        env: { CORTEX_LLM_ENDPOINT: "" }
+        run: |
+          set -euo pipefail
+          J=$(mktemp -d)
+          C="sudo -E ./target/debug/cortex --journal-dir $J --state-dir /var/lib/cortex/tx"
+          $C try "create directory /opt/cortex-e2e and add a hosts entry ip=10.0.0.99 hostname=cortex-e2e.test"
+          test -d /opt/cortex-e2e
+          grep -qw cortex-e2e.test /etc/hosts
+          $C status | grep -c undoable | grep -q 2
+          $C undo --all
+          ! test -d /opt/cortex-e2e
+          ! grep -qw cortex-e2e.test /etc/hosts
           $C status | grep -q clean
 
   security:

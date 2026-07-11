@@ -16,6 +16,7 @@ uuid.workspace = true
 cortex-core.workspace = true
 cortex-policy.workspace = true
 cortex-registry.workspace = true
+cortex-planner.workspace = true
 cortex-sandbox.workspace = true
 anyhow.workspace = true
 serde.workspace = true

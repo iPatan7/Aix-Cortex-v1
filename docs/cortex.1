@@ -1,0 +1,142 @@
+.TH CORTEX 1 "July 2026" "cortex 0.3.0" "User Commands"
+.SH NAME
+cortex \- run Linux/DevOps changes transactionally, verify them, undo them with proof
+.SH SYNOPSIS
+.B cortex
+.RI [ GLOBAL\-FLAGS ]
+.I COMMAND
+.RI [ ARGS ]
+.SH DESCRIPTION
+.B cortex
+runs a change for real inside an OverlayFS sandbox, proves it worked, and
+only then merges it into the filesystem \(em recording an inverse
+.B and a post-condition that proves the inverse worked
+before it commits. Undo runs that inverse and then checks; drift detection
+refuses to overwrite anything someone else changed since.
+.PP
+The planner is offline and deterministic: keyword matching over a registry of
+human-written templates, with typed parameter extraction and bounded typo
+tolerance. No model, no network. The same sentence always produces the same
+plan, and every plan is shown in full before anything executes.
+.SH COMMANDS
+.TP
+.BI "cortex try \(dq" "what you want" "\(dq"
+Plan it, run it in a sandbox, verify, commit. The
+.B try
+verb is optional:
+.B cortex run nginx on port 8080
+works. Conjunctions compose:
+\(dqinstall htop and open port 8080\(dq plans and runs both steps in order,
+each journaled separately.
+.TP
+.BI "cortex do " "template key=value ..."
+Run a known-good template directly, with exact parameters.
+.TP
+.B cortex status
+What is applied, what is undoable, what is blocked by drift.
+.TP
+.BI "cortex undo " "[id|last|name]"
+Reverse the newest pending change, or one named by journal id, template id
+(\fBcortex undo nginx.serve\fR), service or container name
+(\fBcortex undo cortex-nginx\fR). With
+.B --all
+reverses every pending change, newest first. With
+.B --force
+proceeds despite drift, rescuing the current contents first.
+.TP
+.BI "cortex receipt " [id]
+A signed, human-readable summary of one transaction, drift marked.
+.TP
+.B cortex history
+Everything cortex has committed, newest first.
+.TP
+.BI "cortex forget " id
+Drop an entry from the pending list without undoing it (for irreversible
+operations reversed by hand). The entry stays in the journal for audit.
+.TP
+.B cortex verify --self
+The conformance suite: for every exercisable template, run it, prove it
+worked, undo it, prove it undid. Skipped templates are listed with reasons.
+.TP
+.B cortex templates
+List every reversible operation, grouped by category.
+.TP
+.BI "cortex templates show " id
+One template's full contract: parameters, commands, undo, drift behaviour.
+.TP
+.BI "cortex templates search " words...
+Find the template for a job by approximate words.
+.TP
+.B cortex demo
+Prove the guarantee in about two seconds \(em no root, no docker, no network.
+.SH GLOBAL FLAGS
+.TP
+.B --plan, --dry-run
+Show the full plan \(em commands, undo, proofs \(em and stop.
+.TP
+.B --all
+undo: reverse every pending change, newest first.
+.TP
+.B --force
+undo: proceed despite drift (rescues current contents first).
+.TP
+.B --yes-irreversible
+try/do: consent to an operation that cannot be undone.
+.TP
+.B --json
+Machine-readable output.
+.TP
+.B --no-color
+Never emit ANSI colour.
+.TP
+.BI "--journal-dir " dir
+Where undo records live (default /var/lib/cortex/journal).
+.TP
+.BI "--lower " dir
+Overlay base layer (default /).
+.TP
+.BI "--state-dir " dir
+Overlay scratch (default /var/lib/cortex/transactions).
+.TP
+.BI "--policy " file
+Policy file (default /etc/cortex/policy.toml). Must be root-owned when
+cortex runs as root.
+.SH USER TEMPLATES
+Operator-written templates live in
+.I ~/.cortex/templates/*.toml
+(override with CORTEX_TEMPLATE_DIR). They pass the same well-formedness gate
+as built-ins \(em an inverse without a post-condition is refused \(em and the
+same policy engine. When cortex runs as root, template files must be
+root-owned and not group/world-writable.
+.SH POLICY
+Every mutating operation is evaluated deny-by-default against a root-owned
+.IR /etc/cortex/policy.toml .
+When no file exists, the built-in policy applies: reversible operations run,
+irreversible ones need explicit consent. Rules match templates (down to
+argument globs) and workflows.
+.SH EXAMPLES
+.nf
+cortex run nginx on port 8080
+cortex deploy myapp image=nginx ports=8080:80 env=NODE_ENV=production volume=/srv/data:/data
+cortex try "create user deploy with sudo" --plan
+cortex try "install htop and open port 8080"
+cortex do docker.run name=web image=nginx ports=8080:80
+cortex undo cortex-nginx
+cortex undo --all
+.fi
+.SH EXIT STATUS
+0 on success; 1 when a plan is refused, verification fails, or an undo is
+blocked (the message names the next step).
+.SH FILES
+.TP
+.I /var/lib/cortex/journal
+Undo records: inverse layers, compensations, fingerprints.
+.TP
+.I /etc/cortex/policy.toml
+Root-owned authorization rules.
+.TP
+.I ~/.cortex/templates/
+Operator-written templates.
+.SH SEE ALSO
+Project documentation:
+.I https://github.com/iPatan7/Aix-Cortex-v1

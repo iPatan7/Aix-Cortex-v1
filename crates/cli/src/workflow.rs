@@ -1044,6 +1044,18 @@ fn is_writable(dir: &Path) -> bool {
 pub fn undo(journal_dir: &Path, id: Option<&str>, force: bool) -> Result<()> {
     let journal = Journal::new(journal_dir);
 
+    // `undo` takes more than an entry id: `last` means the newest pending
+    // entry, and a template id / service / unit name means the newest pending
+    // entry that touched it — `cortex undo nginx.serve` after a bad site,
+    // `cortex undo nginx` after a bad service change. An exact id always
+    // wins; anything unresolvable passes through so peek_undo can name the
+    // real problem (unknown id, already undone).
+    let resolved = match id {
+        None | Some("last") => None,
+        Some(sel) => Some(resolve_selector(&journal, sel)?.unwrap_or_else(|| sel.to_string())),
+    };
+    let id = resolved.as_deref();
+
     // Validate BEFORE side effects: stopping a service for an undo the
     // journal then refuses would leave the system worse than doing nothing.
     let meta = journal.peek_undo(id, force)?;
@@ -1113,6 +1125,27 @@ pub fn undo(journal_dir: &Path, id: Option<&str>, force: bool) -> Result<()> {
     Ok(())
 }
 
+/// Resolve an undo selector against the pending entries: an exact entry id,
+/// else the newest pending entry whose template, service or kind names it.
+/// `None` means "not something pending — let peek_undo produce the error".
+fn resolve_selector(journal: &Journal, sel: &str) -> Result<Option<String>> {
+    let pending = journal.pending()?;
+    if pending.iter().any(|m| m.id == sel) {
+        return Ok(Some(sel.to_string()));
+    }
+    Ok(pending
+        .iter()
+        .find(|m| {
+            m.template_id.as_deref() == Some(sel)
+                || m.service.as_deref() == Some(sel)
+                || m.kind == sel
+                || m.description
+                    .split_whitespace()
+                    .any(|w| w.trim_matches('\'') == sel)
+        })
+        .map(|m| m.id.clone()))
+}
+
 /// Revert every pending entry, newest first — "undo everything". Stops at
 /// the first failure rather than stepping over it: a compensation that
 /// refused means the state is not what the older entries were journaled
@@ -1178,8 +1211,6 @@ fn undo_one(journal_dir: &Path, id: &str, force: bool) -> Result<()> {
 /// satisfy its own verifier is a failure — which is exactly the class of bug
 /// (`--undo-cmd "echo done"`) that this design exists to make impossible.
 pub fn verify_self() -> Result<()> {
-    use cortex_registry::{lookup, TEMPLATES};
-
     ui::section("reversibility conformance");
     println!(
         "  {}\n",
@@ -1190,21 +1221,21 @@ pub fn verify_self() -> Result<()> {
     let mut skipped = 0usize;
     let mut failed = Vec::new();
 
-    for t in TEMPLATES {
+    for t in cortex_registry::all() {
         // Report *why* a template did not run. A suite that hides its own
         // coverage is the same lie as an undo that hides its own failure.
-        if let Some(reason) = unavailable(t.id) {
+        if let Some(reason) = unavailable(&t.id) {
             ui::Step::start(t.id.to_string()).skip(reason);
             skipped += 1;
             continue;
         }
-        let Some(args) = self_test_args(t.id) else {
+        let Some(args) = self_test_args(&t.id) else {
             ui::Step::start(t.id.to_string()).skip("no self-test fixture");
             skipped += 1;
             continue;
         };
 
-        let bound = lookup(t.id).expect("id from TEMPLATES").bind(&args)?;
+        let bound = t.bind(&args)?;
         let step = ui::Step::start(t.id.to_string());
         match conformance_cycle(&bound) {
             Ok(()) => {
@@ -1213,7 +1244,7 @@ pub fn verify_self() -> Result<()> {
             }
             Err(e) => {
                 step.fail(&format!("{e}"));
-                failed.push((t.id, format!("{e:#}")));
+                failed.push((t.id.as_str(), format!("{e:#}")));
             }
         }
     }
@@ -1298,6 +1329,9 @@ fn self_test_args(id: &str) -> Option<std::collections::BTreeMap<String, String>
             .collect()
     };
     let d = self_test_dir();
+    // Files created by the cycle are chowned to whoever runs the suite, so
+    // the fixtures work with and without root.
+    let me = std::env::var("USER").unwrap_or_else(|_| "root".to_string());
     match id {
         "docker.run" => Some(m(&[
             ("name", "cortex-selftest"),
@@ -1306,6 +1340,28 @@ fn self_test_args(id: &str) -> Option<std::collections::BTreeMap<String, String>
             // the conformance suite spuriously fail.
             ("ports", "0:80"),
         ])),
+        "podman.run" => Some(m(&[
+            ("name", "cortex-selftest"),
+            ("image", "docker.io/busybox:latest"),
+            ("ports", "0:80"),
+        ])),
+        "docker.app" => Some(m(&[
+            ("name", "cortex-selftest-app"),
+            ("image", "busybox:latest"),
+            ("ports", "0:80"),
+            ("env", "CORTEX_SELFTEST=1"),
+            ("volume", &format!("{}:/data", d.join("blue").to_str()?)),
+        ])),
+        "docker.volume.create" => Some(m(&[("name", "cortex-selftest-vol")])),
+        "docker.network.create" => Some(m(&[("name", "cortex-selftest-net")])),
+        "backup.dir" => {
+            // Something real to archive, so `tar -tzf` verifies real content.
+            let _ = std::fs::write(d.join("blue/backed-up.txt"), "cortex selftest\n");
+            Some(m(&[
+                ("src", d.join("blue").to_str()?),
+                ("dest", d.join("backup-selftest.tar.gz").to_str()?),
+            ]))
+        }
         "symlink.swap" => {
             // Start the link pointing at blue; the template swaps it to
             // green, and the inverse must move it back to blue exactly.
@@ -1318,27 +1374,62 @@ fn self_test_args(id: &str) -> Option<std::collections::BTreeMap<String, String>
                 ("previous", d.join("blue").to_str()?),
             ]))
         }
-        // service.* and package.install mutate the real host: a conformance
-        // run must never install a package or stop a daemon behind the
-        // operator's back. They are exercised in CI under a container.
+        "file.deploy" => Some(m(&[
+            ("path", d.join("deployed.conf").to_str()?),
+            ("content", "deployed by the cortex conformance suite"),
+            ("mode", "0644"),
+            ("owner", &me),
+        ])),
+        "dir.create" => Some(m(&[
+            ("path", d.join("made-dir").to_str()?),
+            ("mode", "0755"),
+            ("owner", &me),
+        ])),
+        // Everything else mutates the real host (services, packages, users,
+        // firewall, nginx): a conformance run must never do that behind the
+        // operator's back. Those run in CI inside a container.
         _ => None,
     }
 }
 
-/// Why a template cannot be exercised here (missing daemon, no root).
+/// Why a template cannot be exercised here (missing daemon, would mutate the
+/// host). Returning `None` means "exercise it if a fixture exists".
 fn unavailable(id: &str) -> Option<&'static str> {
     match id {
-        "docker.run" | "docker.compose.up" => {
+        "docker.run"
+        | "docker.compose.up"
+        | "docker.app"
+        | "docker.volume.create"
+        | "docker.network.create" => {
             if predicate_holds("docker info").unwrap_or(false) {
                 None
             } else {
                 Some("docker unavailable")
             }
         }
-        "service.start" | "service.stop" | "service.enable" => {
-            Some("would mutate host services; covered in CI")
+        "podman.run" => {
+            if predicate_holds("podman info").unwrap_or(false) {
+                None
+            } else {
+                Some("podman unavailable")
+            }
         }
-        "package.install" => Some("would install a package; covered in CI"),
+        "service.start" | "service.stop" | "service.enable" | "service.disable"
+        | "service.create" => Some("would mutate host services; covered in CI"),
+        "package.install" | "package.remove" | "package.install-dnf" | "package.remove-dnf" => {
+            Some("would install/remove a package; covered in CI")
+        }
+        "user.add" | "user.add-sudo" | "user.grant-sudo" | "user.remove" | "user.ssh-key" => {
+            Some("would modify system users; covered in CI")
+        }
+        "firewall.allow" | "firewall.remove" => Some("would change firewall rules; covered in CI"),
+        "nginx.serve" | "nginx.tls" => Some("would reconfigure nginx on this host; covered in CI"),
+        "sysctl.set" | "swap.create" => Some("would tune this host's kernel/swap; covered in CI"),
+        "sshd.set" => Some("would reconfigure sshd on this host; covered in CI"),
+        "hosts.add" => Some("would edit /etc/hosts here; undo is the journal restore (CI)"),
+        "git.clone" | "certbot.issue" => {
+            Some("undo is the journal's file restore; exercised by the overlay tests in CI")
+        }
         _ => None,
     }
 }
@@ -1382,9 +1473,9 @@ pub fn from_plan(plan: &serde_json::Value) -> Result<Workflow> {
             let template = cortex_registry::lookup(&id).with_context(|| {
                 format!(
                     "planner chose unknown template `{id}`; known templates: {}",
-                    cortex_registry::TEMPLATES
+                    cortex_registry::all()
                         .iter()
-                        .map(|t| t.id)
+                        .map(|t| t.id.as_str())
                         .collect::<Vec<_>>()
                         .join(", ")
                 )
@@ -1407,21 +1498,6 @@ pub fn from_plan(plan: &serde_json::Value) -> Result<Workflow> {
     })
 }
 
-/// True when the user is asking to reverse things rather than do something.
-/// Matched before any LLM call so `undo` keeps working with no model
-/// reachable — the one command you most need when things have gone wrong.
-pub fn is_undo_intent(text: &str) -> bool {
-    let t = text.trim().to_lowercase();
-    let t = t.trim_end_matches(['.', '!', '?']).trim();
-    const VERBS: &[&str] = &["undo", "revert", "roll back", "rollback", "reverse"];
-    VERBS.iter().any(|v| {
-        t == *v
-            || t.starts_with(&format!("{v} "))
-            || t.starts_with(&format!("please {v}"))
-            || t.starts_with(&format!("can you {v}"))
-    })
-}
-
 /// Authorize a resolved plan. Returns `Err` to refuse it.
 ///
 /// Taken as a callback so `cortex-core` does not decide *where* policy comes
@@ -1432,70 +1508,106 @@ pub type Authorizer<'a> = dyn Fn(&cortex_policy::Operation) -> Result<()> + 'a;
 
 /// The natural-language entry point shared by the CLI, the Obsidian command
 /// palette and the server relay: English in, a reversible workflow out.
+///
+/// The planner is offline and deterministic (see `cortex-planner`): keyword
+/// matching over the template registry, no model, no network. An LLM is
+/// consulted only when the operator has explicitly configured an endpoint
+/// AND the offline planner found nothing — never by default — and whatever
+/// a model proposes goes through the same plan → render → authorize →
+/// execute path as everything else.
 pub fn run_natural_language(
     description: &str,
     journal_dir: &Path,
     lower: Option<PathBuf>,
     state_dir: Option<PathBuf>,
+    plan_only: bool,
     authorize: &Authorizer<'_>,
 ) -> Result<()> {
-    if is_undo_intent(description) {
-        ui::info("understood as an undo request");
-        authorize(&cortex_policy::Operation::Undo)?;
-        return undo_all(journal_dir, false);
-    }
+    use cortex_planner::Understanding;
 
-    // Fast path: the most common intents are matched locally, with no model
-    // call at all. This is most of the latency budget, and it means the
-    // hero command still works on a box with no network.
-    if let Some(plan) = cortex_core::plan::offline(description) {
-        ui::info(&format!("matched offline: {}", plan.summary));
-        return run_plan(&plan.value, journal_dir, lower, state_dir, authorize);
+    match cortex_planner::understand(description) {
+        Understanding::Undo => {
+            ui::info("understood as an undo request");
+            if plan_only {
+                println!(
+                    "  would reverse every pending change, newest first (see `cortex status`)"
+                );
+                return Ok(());
+            }
+            authorize(&cortex_policy::Operation::Undo)?;
+            undo_all(journal_dir, false)
+        }
+        Understanding::Plan(planned) => {
+            ui::info(&format!("understood: {}", planned.summary));
+            crate::planview::render(&planned.value)?;
+            if plan_only {
+                crate::planview::plan_only_footer();
+                return Ok(());
+            }
+            run_plan(&planned.value, journal_dir, lower, state_dir, authorize)
+        }
+        // A composed request ("install htop and open port 8080"): every step
+        // is rendered before anything runs, each step journals separately,
+        // and a failure stops the sequence — committed steps stay visible in
+        // `cortex status` and unwind newest-first with `cortex undo --all`.
+        Understanding::Composite(plans) => {
+            ui::info(&format!("understood {} steps", plans.len()));
+            for (i, p) in plans.iter().enumerate() {
+                crate::planview::render_titled(
+                    &p.value,
+                    &format!("step {}/{}: {}", i + 1, plans.len(), p.summary),
+                )?;
+            }
+            if plan_only {
+                crate::planview::plan_only_footer();
+                return Ok(());
+            }
+            for (i, p) in plans.iter().enumerate() {
+                ui::section(&format!(
+                    "running step {}/{}: {}",
+                    i + 1,
+                    plans.len(),
+                    p.summary
+                ));
+                run_plan(
+                    &p.value,
+                    journal_dir,
+                    lower.clone(),
+                    state_dir.clone(),
+                    authorize,
+                )
+                .with_context(|| {
+                    format!(
+                        "step {}/{} failed; the {} earlier step(s) stayed committed — \
+                         `cortex status` shows them, `cortex undo --all` reverses them",
+                        i + 1,
+                        plans.len(),
+                        i
+                    )
+                })?;
+            }
+            Ok(())
+        }
+        Understanding::NeedsInput(n) => crate::planview::render_needs_input(&n),
+        Understanding::Unknown(u) => {
+            // Opt-in LLM fallback: only with an explicitly configured
+            // endpoint. The model still only *selects* a template or
+            // workflow; its plan is rendered and authorized like any other.
+            if let Some(client) = LlmClient::from_env() {
+                ui::info("offline planner found nothing; asking the configured LLM");
+                let plan = client
+                    .generate_plan(description)
+                    .map_err(|e| e.context(crate::planview::render_unknown(description, &u)))?;
+                crate::planview::render(&plan)?;
+                if plan_only {
+                    crate::planview::plan_only_footer();
+                    return Ok(());
+                }
+                return run_plan(&plan, journal_dir, lower, state_dir, authorize);
+            }
+            bail!(crate::planview::render_unknown(description, &u))
+        }
     }
-
-    let client = LlmClient::from_env().unwrap_or_else(|| {
-        println!(
-            "[cortex] {} not set; trying the default endpoint {}",
-            crate::llm::ENV_ENDPOINT,
-            crate::llm::DEFAULT_ENDPOINT
-        );
-        LlmClient::new(crate::llm::DEFAULT_ENDPOINT, "llama3")
-    });
-    let plan = client
-        .generate_plan(description)
-        .map_err(|e| e.context(offline_fallback_hint(description)))?;
-    ui::info(&format!("plan: {plan}"));
-    run_plan(&plan, journal_dir, lower, state_dir, authorize)
-}
-
-/// A concrete next step when the offline matcher missed and no LLM answered.
-/// Tailored to what the request looks like, so "run nginx on port 8080" gets
-/// the two commands that can actually deliver a service on a port, rather than
-/// a generic suggestion that ignores the port.
-fn offline_fallback_hint(description: &str) -> String {
-    let d = description.to_lowercase();
-    let has_port = d.contains("port")
-        || d.split_whitespace().any(|t| {
-            t.split_once(':').is_some_and(|(h, c)| {
-                !h.is_empty()
-                    && h.chars().all(|c| c.is_ascii_digit())
-                    && c.chars().all(|c| c.is_ascii_digit())
-            })
-        });
-    if has_port {
-        return "\
-could not do that without an LLM, and it names a port — which is ambiguous \
-offline (a container, or a config change?). Pick one explicitly:\n  \
-run a container on that port:   cortex do docker.run name=<n> image=<img> ports=<host>:<container>\n  \
-change a service's listen port: sudo cortex workflow safe-config --service <svc> --cmd \"<edit its config>\"\n\
-Or set CORTEX_LLM_ENDPOINT so `cortex try` can plan it for you."
-            .to_string();
-    }
-    "\
-could not turn that into a reversible workflow without an LLM. Run it \
-explicitly (see `cortex templates` and `cortex --help`), or set \
-CORTEX_LLM_ENDPOINT so `cortex try` can plan it."
-        .to_string()
 }
 
 /// The single point where a plan becomes a running operation. Both the
@@ -1791,6 +1903,43 @@ mod tests {
         assert!(require_privilege_for(&entry(Path::new("/proc"), 0)).is_ok());
     }
 
+    /// `cortex undo nginx.serve` / `cortex undo nginx` must find the newest
+    /// pending entry for that template or service; an exact id passes
+    /// through; an unknown name resolves to nothing (and peek_undo reports).
+    #[test]
+    fn undo_selectors_resolve_against_pending_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let journal = Journal::new(tmp.path().join("journal"));
+        let older = journal
+            .capture_compensation(
+                tmp.path(),
+                "nginx.serve",
+                None,
+                "printf 'site' > /etc/nginx/conf.d/cortex-site.conf",
+                "rm -f /etc/nginx/conf.d/cortex-site.conf",
+                "! test -e /etc/nginx/conf.d/cortex-site.conf",
+                Some("nginx.serve"),
+            )
+            .unwrap();
+        let newer = journal
+            .capture_compensation(
+                tmp.path(),
+                "safe-service",
+                Some("nginx"),
+                "systemctl start nginx",
+                "systemctl stop nginx",
+                "! systemctl is-active --quiet nginx",
+                None,
+            )
+            .unwrap();
+
+        let resolve = |sel: &str| resolve_selector(&journal, sel).unwrap();
+        assert_eq!(resolve("nginx.serve").as_deref(), Some(older.id.as_str()));
+        assert_eq!(resolve("nginx").as_deref(), Some(newer.id.as_str()));
+        assert_eq!(resolve(&older.id).as_deref(), Some(older.id.as_str()));
+        assert_eq!(resolve("postgres"), None);
+    }
+
     #[test]
     fn cron_entries_validate() {
         assert!(valid_cron_entry("0 2 * * 0 /opt/backup.sh"));
@@ -1829,31 +1978,6 @@ mod tests {
     fn shell_quote_survives_quotes() {
         assert_eq!(shell_quote("a'b"), r"'a'\''b'");
         assert_eq!(shell_quote("plain"), "'plain'");
-    }
-
-    #[test]
-    fn undo_intent_is_recognised_without_an_llm() {
-        for yes in [
-            "undo",
-            "Undo.",
-            "undo everything",
-            "please undo that",
-            "revert the last change",
-            "roll back",
-            "rollback everything",
-            "can you reverse that",
-        ] {
-            assert!(is_undo_intent(yes), "should be undo intent: {yes}");
-        }
-        for no in [
-            "run nginx server",
-            "spin up docker images",
-            "undocker the thing", // prefix must be a whole word
-            "install undo-manager",
-            "",
-        ] {
-            assert!(!is_undo_intent(no), "should NOT be undo intent: {no}");
-        }
     }
 
     #[test]

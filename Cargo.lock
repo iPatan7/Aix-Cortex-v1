@@ -97,10 +97,11 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "cortex-cli"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "cortex-core",
+ "cortex-planner",
  "cortex-policy",
  "cortex-registry",
  "cortex-sandbox",
@@ -114,7 +115,7 @@ dependencies = [
 
 [[package]]
 name = "cortex-core"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -129,8 +130,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cortex-planner"
+version = "0.3.0"
+dependencies = [
+ "cortex-registry",
+ "serde_json",
+]
+
+[[package]]
 name = "cortex-policy"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "nix",
@@ -141,15 +150,18 @@ dependencies = [
 
 [[package]]
 name = "cortex-registry"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
+ "nix",
  "serde",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]
 name = "cortex-sandbox"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "landlock",

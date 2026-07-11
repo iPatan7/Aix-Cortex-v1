@@ -12,8 +12,6 @@
 //!   worked** before marking anything undone.
 //! - [`guard`] — content-addressed drift detection and rescue: undo refuses to
 //!   overwrite work that changed since the commit.
-//! - [`plan`] — offline natural-language intent matching, so the hero command
-//!   needs no model for common requests.
 //! - [`ui`] — terminal output: colour that disappears when piped.
 //!
 //! Everything here is engine. Orchestration (which template, which policy,
@@ -21,6 +19,5 @@
 
 pub mod guard;
 pub mod journal;
-pub mod plan;
 pub mod transaction;
 pub mod ui;

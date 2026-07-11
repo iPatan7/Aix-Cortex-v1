@@ -1,0 +1,27 @@
+# Example user template: clear a redis-backed cache, reversibly-in-spirit.
+#
+# Drop this in ~/.cortex/templates/ and it joins the catalog:
+#   cortex templates show app.cache-clear
+#   cortex try "clear the app cache"
+#
+# Note the honest inverse: you cannot un-flush a cache, but you CAN restart
+# the warmer and prove it is running. The drift_note says exactly that.
+
+id = "app.cache-clear"
+summary = "Flush the app cache and re-warm it on undo"
+category = "app"
+example = "cortex do app.cache-clear"
+keywords = [["cache"], ["clear", "flush", "empty", "purge"]]
+host_side = true
+drift_note = "a cache cannot be un-flushed; undo restarts the warmer and proves it is active"
+
+forward = "redis-cli -n {db} flushdb"
+verify_forward = "test \"$(redis-cli -n {db} dbsize)\" = 0"
+inverse = "systemctl restart app-cache-warmer"
+verify_inverse = "systemctl is-active --quiet app-cache-warmer"
+
+[[params]]
+name = "db"
+about = "redis database number holding the cache"
+kind = "ident"
+default = "2"

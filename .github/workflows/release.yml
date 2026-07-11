@@ -89,8 +89,9 @@ jobs:
           asset="cortex-${version}-${{ matrix.target }}.tar.gz"
           dist="$(mktemp -d)"
           cp "target/${{ matrix.target }}/release/cortex" "$dist/cortex"
+          cp docs/cortex.1 "$dist/cortex.1"
           chmod +x "$dist/cortex"
-          tar -czf "$dist/$asset" -C "$dist" cortex
+          tar -czf "$dist/$asset" -C "$dist" cortex cortex.1
           ( cd "$dist" && sha256sum "$asset" > "$asset.sha256" )
           echo "asset=$asset" >> "$GITHUB_OUTPUT"
           echo "dist=$dist" >> "$GITHUB_OUTPUT"

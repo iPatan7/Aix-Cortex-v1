@@ -1,0 +1,12 @@
+[package]
+name = "cortex-planner"
+description = "Deterministic offline planner: approximate English in, a reversible plan out."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+cortex-registry.workspace = true
+serde_json.workspace = true
