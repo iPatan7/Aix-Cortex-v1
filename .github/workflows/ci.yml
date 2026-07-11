@@ -73,12 +73,9 @@ jobs:
 
       # Every template: run it, prove it ran, undo it, prove it undid.
       - name: cortex verify --self
-        run: sudo -E ./target/debug/cortex verify --self
   run: |
-    # Install podman if needed for conformance tests
     sudo apt-get update && sudo apt-get install -y podman
     sudo -E ./target/debug/cortex verify --self
-
       # A conformance suite that cannot fail is decoration. Sabotage a
       # template's inverse and assert the suite goes red.
       - name: the suite detects a lying inverse
