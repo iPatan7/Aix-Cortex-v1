@@ -61,7 +61,7 @@ jobs:
             echo "::error::core root tests skipped — they must run in CI"; exit 1
           fi
 
-    conformance:
+  conformance:
     name: reversibility conformance (real docker)
     runs-on: ubuntu-latest
     steps:
